@@ -146,3 +146,22 @@ describe("i18n vault and upload strings", () => {
     expect(t("en", "clearVaultConfirm").endsWith("?")).toBe(true);
   });
 });
+
+describe("i18n daily workbench strings", () => {
+  it("labels account search", () => {
+    expect(t("en", "searchAccounts")).toBe("Search accounts");
+    expect(t("zh", "searchAccounts")).toBe("搜索账号");
+  });
+
+  it("labels pin and backup actions", () => {
+    expect(t("en", "pinCard")).toBe("Pin");
+    expect(t("zh", "pinCard")).toBe("置顶");
+    expect(t("zh", "unpinCard")).toBe("取消置顶");
+    expect(t("en", "exportBackup")).toBe("Export backup");
+    expect(t("zh", "exportBackup")).toBe("导出备份");
+    expect(t("en", "importBackup")).toBe("Import backup");
+    expect(t("zh", "importBackup")).toBe("导入备份");
+    expect(t("zh", "importBackupConfirm")).toBe("导入会与本机记录合并，重复密钥会跳过。继续？");
+    expect(t("en", "importBackupConfirm").endsWith("?")).toBe(true);
+  });
+});
