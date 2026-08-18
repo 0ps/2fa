@@ -1,16 +1,15 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="light" />
-    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="manifest" href="./manifest.webmanifest" />
-    <title>Local TOTP / 2FA Generator</title>
-    <meta name="description" content="Privacy-first local TOTP and 2FA code generator. Secrets never leave your browser." />
+    <title>本地 TOTP</title>
+    <meta name="description" content="一次性验证码在本浏览器中计算。密钥不会离开这台设备。" />
+    <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <script src="app.js" defer></script>
   </body>
 </html>
