@@ -4,6 +4,18 @@ import { t, type Lang } from "./i18n";
 import { generateTotp, remainingSeconds, type TotpAlgorithm } from "./totp";
 import type { TotpDefaults } from "./routes-types";
 import { toDataURL as qrToDataUrl } from "qrcode";
+import {
+  SESSION_KEY,
+  VAULT_KEY,
+  clampOffset,
+  fillOrAddAction,
+  hasDuplicateSecret,
+  loadVault,
+  pickStoredPayload,
+  saveVault,
+  type PersistedCard,
+  type StorageLike,
+} from "./vault";
 
 export interface CardState {
   id: string;
@@ -16,21 +28,6 @@ export interface CardState {
   nextCode: string;
   valid: boolean;
   status: string;
-}
-
-const SESSION_KEY = "totpSessionCards";
-
-interface PersistedCard {
-  name: string;
-  secret: string;
-  algorithm: TotpAlgorithm;
-  digits: 6 | 8;
-  period: number;
-}
-
-interface SessionPayload {
-  cards: PersistedCard[];
-  timeOffset: number;
 }
 
 function formatDisplayCode(code: string): string {
@@ -49,6 +46,81 @@ export function codeToCopy(remaining: number, code: string, nextCode: string): {
     return { value: nextCode, isNext: true };
   }
   return { value: code, isNext: false };
+}
+
+export function paramsChipText(algorithm: string, digits: number, period: number): string {
+  return `${algorithm} · ${digits} · ${period}s`;
+}
+
+export function imageMimeFromTypes(types: readonly string[]): string | undefined {
+  return types.find((type) => type.startsWith("image/"));
+}
+
+export function imageFilesFromList(files: ArrayLike<File> | null | undefined): File[] {
+  if (!files?.length) return [];
+  return Array.from(files).filter((file) => file.type.startsWith("image/"));
+}
+
+function decodedSecret(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (isOtpAuthUri(value)) {
+    try {
+      return parseOtpAuth(value).secret;
+    } catch {
+      return value;
+    }
+  }
+  return value;
+}
+
+function browserStorage(which: "local" | "session"): StorageLike | null {
+  try {
+    if (which === "local") {
+      if (typeof localStorage === "undefined") return null;
+      return localStorage;
+    }
+    if (typeof sessionStorage === "undefined") return null;
+    return sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function fileFromImageBlob(blob: Blob, mime: string): File {
+  return new File([blob], "clipboard-image", { type: mime });
+}
+
+export type PasteDataLike = {
+  files?: ArrayLike<File> | null;
+  items?: ArrayLike<{ type: string; getAsFile: () => File | null }> | null;
+};
+
+export function imageFileFromPasteData(data: PasteDataLike | null | undefined): File | undefined {
+  if (!data) return undefined;
+  const files = data.files;
+  if (files && files.length) {
+    const image = Array.from(files).find((f) => f.type.startsWith("image/"));
+    if (image) return image;
+  }
+  const items = data.items;
+  if (items && items.length) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      if (!item.type.startsWith("image/")) continue;
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+  }
+  return undefined;
+}
+
+export function shouldAutoCopyCode(lastAutoCode: string, code: string, valid: boolean): boolean {
+  return valid && code !== lastAutoCode;
+}
+
+export function joinOtpAuthUris(uris: string[]): string {
+  return uris.join("\n");
 }
 
 type BarcodeDetectorCtor = new (opts: { formats: string[] }) => {
@@ -82,11 +154,6 @@ function newCard(defaults: TotpDefaults): CardState {
   };
 }
 
-function clampOffset(n: number): number {
-  if (!Number.isFinite(n)) return 0;
-  return Math.min(90, Math.max(-90, Math.round(n)));
-}
-
 function isAlgorithm(value: unknown): value is TotpAlgorithm {
   return value === "SHA-1" || value === "SHA-256" || value === "SHA-512";
 }
@@ -101,24 +168,6 @@ function cardFromPersisted(raw: PersistedCard, defaults: TotpDefaults): CardStat
     card.period = Math.min(120, Math.max(10, Math.round(raw.period)));
   }
   return card;
-}
-
-function loadSession(): SessionPayload | null {
-  try {
-    if (typeof sessionStorage === "undefined") return null;
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (!raw) return null;
-    const data = JSON.parse(raw) as unknown;
-    if (Array.isArray(data)) {
-      return { cards: data as PersistedCard[], timeOffset: 0 };
-    }
-    if (!data || typeof data !== "object") return null;
-    const rec = data as { cards?: unknown; timeOffset?: unknown };
-    const cards = Array.isArray(rec.cards) ? (rec.cards as PersistedCard[]) : [];
-    return { cards, timeOffset: clampOffset(Number(rec.timeOffset) || 0) };
-  } catch {
-    return null;
-  }
 }
 
 function applySecretInput(card: CardState, raw: string, lang: Lang) {
@@ -193,12 +242,6 @@ function isFileDrag(ev: DragEvent): boolean {
   return Boolean(ev.dataTransfer?.types && [...ev.dataTransfer.types].includes("Files"));
 }
 
-function imageFromDrop(ev: DragEvent): File | undefined {
-  const files = ev.dataTransfer?.files;
-  if (!files?.length) return undefined;
-  return [...files].find((f) => f.type.startsWith("image/")) ?? files[0];
-}
-
 function secretLines(text: string): string[] {
   return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
 }
@@ -219,23 +262,31 @@ export class GeneratorPanel {
   private camStream: MediaStream | null = null;
   private camTimer: number | null = null;
   private camActive = false;
+  private lastAutoCode = "";
 
   constructor(root: HTMLElement, lang: Lang, defaults: TotpDefaults, bootstrapSecret?: string) {
     this.root = root;
     this.lang = lang;
     this.defaults = defaults;
-    const stored = loadSession();
-    if (stored) this.timeOffset = stored.timeOffset;
+    const local = loadVault(browserStorage("local"), VAULT_KEY);
+    const session = loadVault(browserStorage("session"), SESSION_KEY);
+    const stored = pickStoredPayload(local, session);
+    if (stored) this.timeOffset = stored.payload.timeOffset;
     if (bootstrapSecret) {
       const first = newCard(defaults);
       applySecretInput(first, bootstrapSecret, lang);
       this.cards.push(first);
-    } else if (stored && stored.cards.length) {
-      this.cards = stored.cards.map((c) => cardFromPersisted(c, defaults));
-      if (!this.cards.length) this.cards.push(newCard(defaults));
-    } else {
-      this.cards.push(newCard(defaults));
+    } else if (stored) {
+      this.cards = stored.payload.cards.map((c) => cardFromPersisted(c, defaults));
+      if (stored.from === "local") {
+        try {
+          saveVault(browserStorage("session"), SESSION_KEY, stored.payload.cards, stored.payload.timeOffset);
+        } catch {
+          /* private mode / quota */
+        }
+      }
     }
+    if (!this.cards.length) this.cards.push(newCard(defaults));
     this.selectedId = this.cards[0].id;
     this.render();
     void this.tick();
@@ -243,6 +294,7 @@ export class GeneratorPanel {
       void this.tick();
     }, 1000);
     document.addEventListener("keydown", this.onKeyDown);
+    document.addEventListener("paste", this.onPaste);
   }
 
   destroy() {
@@ -252,6 +304,7 @@ export class GeneratorPanel {
     this.copiedTimer = null;
     this.stopCam();
     document.removeEventListener("keydown", this.onKeyDown);
+    document.removeEventListener("paste", this.onPaste);
     this.root.replaceChildren();
   }
 
@@ -259,23 +312,42 @@ export class GeneratorPanel {
     return Math.floor(Date.now() / 1000) + this.timeOffset;
   }
 
+  private snapshotCards(): PersistedCard[] {
+    return this.cards.map((c) => ({
+      name: c.name,
+      secret: c.secret,
+      algorithm: c.algorithm,
+      digits: c.digits,
+      period: c.period,
+    }));
+  }
+
   private persistSession() {
+    const cards = this.snapshotCards();
     try {
-      if (typeof sessionStorage === "undefined") return;
-      const payload: SessionPayload = {
-        cards: this.cards.map((c) => ({
-          name: c.name,
-          secret: c.secret,
-          algorithm: c.algorithm,
-          digits: c.digits,
-          period: c.period,
-        })),
-        timeOffset: this.timeOffset,
-      };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload));
+      saveVault(browserStorage("session"), SESSION_KEY, cards, this.timeOffset);
     } catch {
       /* private mode / quota */
     }
+    try {
+      saveVault(browserStorage("local"), VAULT_KEY, cards, this.timeOffset);
+    } catch {
+      /* private mode / quota */
+    }
+  }
+
+  private clearDeviceRecords() {
+    if (!window.confirm(t(this.lang, "clearVaultConfirm"))) return;
+    this.stopCam();
+    this.closeQr();
+    this.cards = [newCard(this.defaults)];
+    this.selectedId = this.cards[0].id;
+    this.secretVisible = true;
+    this.pendingAutoHide = true;
+    this.lastAutoCode = "";
+    this.persistSession();
+    this.render();
+    void this.tick();
   }
 
   private selected(): CardState {
@@ -298,10 +370,16 @@ export class GeneratorPanel {
     void this.tick();
   }
 
-  private async tick() {
+  private async tick(skipAutoCopy = false) {
     const now = this.unixNow();
     await Promise.all(this.cards.map((c) => refreshCard(c, this.lang, now)));
     this.syncOutputs(now);
+    if (skipAutoCopy) return;
+    const card = this.selected();
+    if (shouldAutoCopyCode(this.lastAutoCode, card.code, card.valid)) {
+      this.lastAutoCode = card.code;
+      await this.copy(card);
+    }
   }
 
   private railName(card: CardState): string {
@@ -343,6 +421,11 @@ export class GeneratorPanel {
       this.pendingAutoHide = false;
     }
 
+    const cardTop = stage.querySelector<HTMLElement>(".card-top");
+    if (cardTop) cardTop.hidden = noSecret && this.cards.length === 1;
+    const nameInput = stage.querySelector<HTMLInputElement>(".name-input");
+    if (nameInput) nameInput.placeholder = t(this.lang, "genNameQuiet");
+
     const codeRow = stage.querySelector<HTMLElement>(".code-row");
     if (codeRow) codeRow.hidden = !card.valid;
     const codeBtn = stage.querySelector<HTMLButtonElement>(".code-display");
@@ -369,6 +452,11 @@ export class GeneratorPanel {
     if (bar) bar.hidden = !card.valid;
     const fill = stage.querySelector<HTMLElement>(".otp-bar-fill");
     if (fill) fill.style.width = `${Math.max(0, Math.min(100, (left / card.period) * 100))}%`;
+    const chip = stage.querySelector<HTMLElement>(".params-chip");
+    if (chip) {
+      chip.hidden = !card.valid;
+      if (card.valid) chip.textContent = paramsChipText(card.algorithm, card.digits, card.period);
+    }
     const nextEl = stage.querySelector<HTMLElement>(".next-code");
     if (nextEl) {
       nextEl.hidden = !showNext;
@@ -426,7 +514,7 @@ export class GeneratorPanel {
     const del = stage.querySelector<HTMLButtonElement>(".delete-btn");
     if (del) del.hidden = this.cards.length === 1;
     const addInline = stage.querySelector<HTMLButtonElement>(".add-inline");
-    if (addInline) addInline.hidden = this.cards.length !== 1;
+    if (addInline) addInline.hidden = !(card.valid && this.cards.length === 1);
     const extra = stage.querySelector<HTMLElement>(".more-actions");
     if (extra) extra.hidden = !card.valid;
     const clockRange = stage.querySelector<HTMLInputElement>(".clock-range");
@@ -464,6 +552,7 @@ export class GeneratorPanel {
     this.fileInput = document.createElement("input");
     this.fileInput.type = "file";
     this.fileInput.accept = "image/*";
+    this.fileInput.multiple = true;
     this.fileInput.hidden = true;
     this.fileInput.addEventListener("change", () => void this.onFile());
 
@@ -506,7 +595,7 @@ export class GeneratorPanel {
     name.className = "name-input";
     name.type = "text";
     name.autocomplete = "off";
-    name.placeholder = t(this.lang, "genNamePh");
+    name.placeholder = t(this.lang, "genNameQuiet");
     name.setAttribute("aria-label", t(this.lang, "genName"));
     name.value = card.name;
     name.addEventListener("input", () => {
@@ -533,9 +622,10 @@ export class GeneratorPanel {
     addInline.type = "button";
     addInline.className = "ghost-btn add-inline";
     addInline.textContent = t(this.lang, "genAdd");
-    addInline.hidden = this.cards.length !== 1;
+    addInline.hidden = !(card.valid && this.cards.length === 1);
     addInline.addEventListener("click", () => this.addCard());
     top.append(name, addInline, del);
+    top.hidden = !card.secret.trim() && this.cards.length === 1;
 
     const board = document.createElement("div");
     board.className = card.valid ? "otp-board has-code" : "otp-board";
@@ -567,6 +657,10 @@ export class GeneratorPanel {
     fill.className = "otp-bar-fill";
     fill.style.width = "100%";
     bar.append(fill);
+    const chip = document.createElement("p");
+    chip.className = "params-chip";
+    chip.hidden = !card.valid;
+    chip.textContent = paramsChipText(card.algorithm, card.digits, card.period);
     const nextEl = document.createElement("p");
     nextEl.className = "next-code";
     nextEl.hidden = true;
@@ -597,7 +691,7 @@ export class GeneratorPanel {
     dropHint.className = "drop-hint";
     dropHint.textContent = t(this.lang, "pasteHint");
     dropHint.hidden = card.valid;
-    board.append(codeRow, bar, nextEl, hint, copyCodeBtn, emptyCta, dropHint);
+    board.append(codeRow, bar, chip, nextEl, hint, copyCodeBtn, emptyCta, dropHint);
     board.addEventListener("click", (ev) => {
       if (!card.valid) return;
       if (ev.target instanceof HTMLElement && ev.target.closest(".empty-cta, .copy-code-btn")) return;
@@ -673,6 +767,7 @@ export class GeneratorPanel {
       if (railName) railName.textContent = this.railName(card);
       this.closeQr();
       this.stopCam();
+      this.lastAutoCode = "";
       this.persistSession();
       void this.tick();
     });
@@ -699,7 +794,17 @@ export class GeneratorPanel {
     scanLive.hidden = !card.valid;
     const camLive = this.camButton(card, "cam-live");
     camLive.hidden = !card.valid || !camScanSupported();
-    extraBody.append(copyUri, showQr, scanLive, camLive);
+    const copyAll = document.createElement("button");
+    copyAll.type = "button";
+    copyAll.className = "ghost-btn copy-all-uri-btn";
+    copyAll.textContent = t(this.lang, "copyAllUri");
+    copyAll.addEventListener("click", () => void this.copyAllUri());
+    const clearVault = document.createElement("button");
+    clearVault.type = "button";
+    clearVault.className = "ghost-btn clear-vault-btn";
+    clearVault.textContent = t(this.lang, "clearVault");
+    clearVault.addEventListener("click", () => this.clearDeviceRecords());
+    extraBody.append(copyUri, copyAll, showQr, scanLive, camLive, clearVault);
     extra.append(extraSum, extraBody);
 
     const details = document.createElement("details");
@@ -789,10 +894,10 @@ export class GeneratorPanel {
       ev.preventDefault();
       depth = 0;
       stage.classList.remove("is-drop");
-      const file = isFileDrag(ev) ? imageFromDrop(ev) : undefined;
-      if (file) {
+      const images = isFileDrag(ev) ? imageFilesFromList(ev.dataTransfer?.files) : [];
+      if (images.length) {
         this.scanTarget = card;
-        void this.onFile(file);
+        void this.onFile(images);
         return;
       }
       const text = ev.dataTransfer?.getData("text/plain") || ev.dataTransfer?.getData("text/uri-list") || "";
@@ -877,6 +982,7 @@ export class GeneratorPanel {
     const picked = codeToCopy(left, card.code, card.nextCode);
     try {
       await navigator.clipboard.writeText(picked.value);
+      this.lastAutoCode = card.code;
       card.status = picked.isNext
         ? t(this.lang, "genCopiedNext", { code: picked.value })
         : t(this.lang, "genCopied", { code: picked.value });
@@ -892,6 +998,20 @@ export class GeneratorPanel {
     if (!card.secret.trim()) return;
     try {
       await navigator.clipboard.writeText(toOtpAuthUri(card));
+      card.status = t(this.lang, "genCopied", { code: "otpauth://" });
+      this.syncOutputs(this.unixNow());
+    } catch {
+      card.status = t(this.lang, "genCopyFail");
+      this.syncOutputs(this.unixNow());
+    }
+  }
+
+  private async copyAllUri() {
+    const uris = this.cards.filter((c) => c.secret.trim()).map((c) => toOtpAuthUri(c));
+    if (!uris.length) return;
+    const card = this.selected();
+    try {
+      await navigator.clipboard.writeText(joinOtpAuthUris(uris));
       card.status = t(this.lang, "genCopied", { code: "otpauth://" });
       this.syncOutputs(this.unixNow());
     } catch {
@@ -949,6 +1069,7 @@ export class GeneratorPanel {
     let added = false;
     if (lines.length >= 2) {
       for (const line of lines.slice(1)) {
+        if (hasDuplicateSecret(this.cards, decodedSecret(line))) continue;
         const extra = newCard(this.defaults);
         applySecretInput(extra, line, this.lang);
         this.cards.push(extra);
@@ -957,15 +1078,40 @@ export class GeneratorPanel {
     }
     this.persistSession();
     if (added) this.render();
-    await this.tick();
+    await this.tick(true);
     if (card.valid) {
       this.root.querySelector<HTMLButtonElement>(".code-display")?.focus();
       await this.copy(card);
+      this.lastAutoCode = card.code;
     }
   }
 
   private async paste(card: CardState, input: HTMLInputElement) {
     try {
+      if (typeof navigator.clipboard.read === "function") {
+        try {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            const mime = imageMimeFromTypes(item.types);
+            if (!mime) continue;
+            const blob = await item.getType(mime);
+            const file = fileFromImageBlob(blob, mime);
+            this.scanTarget = card;
+            await this.onFile(file);
+            return;
+          }
+          for (const item of items) {
+            if (!item.types.includes("text/plain")) continue;
+            const text = await (await item.getType("text/plain")).text();
+            if (text.trim()) {
+              await this.applyPastedText(card, text, input);
+              return;
+            }
+          }
+        } catch {
+          /* fall through to readText */
+        }
+      }
       const text = await navigator.clipboard.readText();
       if (!text.trim()) {
         card.status = t(this.lang, "genPasteEmpty");
@@ -979,6 +1125,20 @@ export class GeneratorPanel {
       input.focus();
     }
   }
+
+  private onPaste = (ev: ClipboardEvent) => {
+    const image = imageFileFromPasteData(ev.clipboardData);
+    if (image) {
+      ev.preventDefault();
+      this.scanTarget = this.selected();
+      void this.onFile(image);
+      return;
+    }
+    const target = ev.target;
+    if (target instanceof HTMLInputElement && target.classList.contains("secret-input")) {
+      return;
+    }
+  };
 
   private onKeyDown = (ev: KeyboardEvent) => {
     if (isTypingTarget(ev.target)) return;
@@ -1004,38 +1164,79 @@ export class GeneratorPanel {
     }
   };
 
-  private async onFile(fileOverride?: File) {
-    const file = fileOverride ?? this.fileInput?.files?.[0];
-    const card = this.scanTarget ?? this.selected();
-    if (this.fileInput) this.fileInput.value = "";
-    if (!file || !card) return;
+  private async decodeQrImage(file: File): Promise<string | null> {
     const Detector = barcodeDetector();
-    if (!Detector) {
+    if (!Detector) throw new Error("no-api");
+    const bmp = await createImageBitmap(file);
+    try {
+      const detector = new Detector({ formats: ["qr_code"] });
+      const codes = await detector.detect(bmp);
+      return codes[0]?.rawValue?.trim() || null;
+    } finally {
+      bmp.close();
+    }
+  }
+
+  private applyDecodedSecret(raw: string): "fill" | "add" | "skip" {
+    const secret = decodedSecret(raw);
+    const duplicate = hasDuplicateSecret(this.cards, secret);
+    const current = this.scanTarget ?? this.selected();
+    const action = fillOrAddAction(Boolean(current.secret.trim()), duplicate);
+    if (action === "skip") return action;
+    if (action === "fill") {
+      applySecretInput(current, raw, this.lang);
+      return action;
+    }
+    const next = newCard(this.defaults);
+    applySecretInput(next, raw, this.lang);
+    this.cards.push(next);
+    this.selectedId = next.id;
+    this.scanTarget = next;
+    return action;
+  }
+
+  private async onFile(filesOverride?: File | File[]) {
+    const files = filesOverride
+      ? (Array.isArray(filesOverride) ? filesOverride : [filesOverride]).filter((f) => !f.type || f.type.startsWith("image/"))
+      : imageFilesFromList(this.fileInput?.files);
+    if (this.fileInput) this.fileInput.value = "";
+    const card = this.scanTarget ?? this.selected();
+    if (!files.length || !card) return;
+    if (!barcodeDetector()) {
       card.status = t(this.lang, "genScanNoApi");
       this.syncOutputs(this.unixNow());
       return;
     }
-    try {
-      const bmp = await createImageBitmap(file);
-      const detector = new Detector({ formats: ["qr_code"] });
-      const codes = await detector.detect(bmp);
-      bmp.close();
-      const raw = codes[0]?.rawValue?.trim();
-      if (!raw) {
-        card.status = t(this.lang, "genScanNoCode");
-        this.syncOutputs(this.unixNow());
-        return;
+    let applied = 0;
+    let skipped = 0;
+    for (const file of files) {
+      try {
+        const raw = await this.decodeQrImage(file);
+        if (!raw) continue;
+        const action = this.applyDecodedSecret(raw);
+        if (action === "skip") skipped++;
+        else applied++;
+      } catch {
+        /* unreadable image */
       }
-      applySecretInput(card, raw, this.lang);
-      this.pendingAutoHide = true;
-      card.status = t(this.lang, "genScanOk");
-      this.persistSession();
-      this.render();
-      await this.tick();
-      if (card.valid) await this.copy(card);
-    } catch {
-      card.status = t(this.lang, "genScanNoCode");
+    }
+    const statusCard = this.selected();
+    if (!applied && !skipped) {
+      statusCard.status = t(this.lang, "genScanNoCode");
       this.syncOutputs(this.unixNow());
+      return;
+    }
+    this.pendingAutoHide = true;
+    if (skipped && !applied) statusCard.status = t(this.lang, "genScanSkipped");
+    else if (skipped) statusCard.status = `${t(this.lang, "genScanOk")} ${t(this.lang, "genScanSkipped")}`;
+    else statusCard.status = t(this.lang, "genScanOk");
+    this.persistSession();
+    this.render();
+    await this.tick(true);
+    const selected = this.selected();
+    if (selected.valid) {
+      await this.copy(selected);
+      this.lastAutoCode = selected.code;
     }
   }
 
@@ -1043,7 +1244,7 @@ export class GeneratorPanel {
     const scan = document.createElement("button");
     scan.type = "button";
     scan.className = `ghost-btn scan-btn ${extraClass}`;
-    scan.textContent = t(this.lang, "genScan");
+    scan.textContent = t(this.lang, extraClass.includes("scan-empty") ? "uploadQr" : "genScan");
     scan.addEventListener("click", () => {
       this.scanTarget = card;
       this.fileInput?.click();
@@ -1141,8 +1342,11 @@ export class GeneratorPanel {
       card.status = t(this.lang, "genScanOk");
       this.persistSession();
       this.render();
-      await this.tick();
-      if (card.valid) await this.copy(card);
+      await this.tick(true);
+      if (card.valid) {
+        await this.copy(card);
+        this.lastAutoCode = card.code;
+      }
     } catch {
       /* keep scanning */
     }
