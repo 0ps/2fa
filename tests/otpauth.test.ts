@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displayNameFromOtpAuth, isOtpAuthUri, parseOtpAuth } from "../src/otpauth";
+import { displayNameFromOtpAuth, isOtpAuthUri, parseOtpAuth, toOtpAuthUri } from "../src/otpauth";
 
 describe("otpauth parse", () => {
   it("parses a full totp URI", () => {
@@ -44,5 +44,67 @@ describe("otpauth parse", () => {
     expect(isOtpAuthUri("otpauth://totp/x?secret=AA")).toBe(true);
     expect(isOtpAuthUri("  otpauth://totp/x?secret=AA")).toBe(true);
     expect(isOtpAuthUri("GEZDGNBV")).toBe(false);
+  });
+});
+
+describe("toOtpAuthUri", () => {
+  it("builds a Key URI with SHA1/SHA256/SHA512 spellings", () => {
+    const uri = toOtpAuthUri({
+      name: "alice@example.com",
+      secret: "JBSWY3DPEHPK3PXP",
+      algorithm: "SHA-256",
+      digits: 8,
+      period: 60,
+      issuer: "ACME",
+    });
+    expect(uri.startsWith("otpauth://totp/")).toBe(true);
+    expect(uri).toContain("secret=JBSWY3DPEHPK3PXP");
+    expect(uri).toContain("issuer=ACME");
+    expect(uri).toContain("algorithm=SHA256");
+    expect(uri).toContain("digits=8");
+    expect(uri).toContain("period=60");
+    const parsed = parseOtpAuth(uri);
+    expect(parsed.secret).toBe("JBSWY3DPEHPK3PXP");
+    expect(parsed.issuer).toBe("ACME");
+    expect(parsed.algorithm).toBe("SHA-256");
+    expect(parsed.digits).toBe(8);
+    expect(parsed.period).toBe(60);
+  });
+
+  it("defaults label and SHA1 when name is empty", () => {
+    const uri = toOtpAuthUri({
+      name: "",
+      secret: "MFRGGZDF",
+      algorithm: "SHA-1",
+      digits: 6,
+      period: 30,
+    });
+    expect(uri).toContain("otpauth://totp/TOTP?");
+    expect(uri).toContain("algorithm=SHA1");
+    expect(uri).not.toContain("issuer=");
+    expect(parseOtpAuth(uri).algorithm).toBe("SHA-1");
+  });
+
+  it("maps SHA-512 to SHA512", () => {
+    const uri = toOtpAuthUri({
+      name: "work",
+      secret: "MFRGGZDF",
+      algorithm: "SHA-512",
+      digits: 6,
+      period: 30,
+    });
+    expect(uri).toContain("algorithm=SHA512");
+    expect(parseOtpAuth(uri).algorithm).toBe("SHA-512");
+  });
+
+  it("strips whitespace from the secret", () => {
+    const uri = toOtpAuthUri({
+      name: "x",
+      secret: "MFRG GZDF",
+      algorithm: "SHA-1",
+      digits: 6,
+      period: 30,
+    });
+    expect(uri).toContain("secret=MFRGGZDF");
   });
 });
