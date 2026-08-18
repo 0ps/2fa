@@ -447,6 +447,7 @@ export class GeneratorPanel {
     if (board) {
       board.classList.toggle("has-code", card.valid);
       board.classList.toggle("is-urgent", urgent);
+      board.classList.toggle("is-empty", noSecret);
     }
     const bar = stage.querySelector<HTMLElement>(".otp-bar");
     if (bar) bar.hidden = !card.valid;
@@ -465,13 +466,20 @@ export class GeneratorPanel {
     }
     const hint = stage.querySelector<HTMLElement>(".otp-hint");
     if (hint) hint.hidden = true;
+    const emptyActions = stage.querySelector<HTMLElement>(".empty-actions");
+    if (emptyActions) emptyActions.hidden = !noSecret;
     const emptyCta = stage.querySelector<HTMLButtonElement>(".empty-cta");
     if (emptyCta) emptyCta.hidden = !noSecret;
     const dropHint = stage.querySelector<HTMLElement>(".drop-hint");
     if (dropHint) dropHint.hidden = card.valid;
 
     const status = stage.querySelector(".status");
-    if (status) status.textContent = card.status;
+    if (status) {
+      status.textContent = card.status;
+      const ok = /copied|已复制|已複製/i.test(card.status);
+      status.classList.toggle("is-toast", Boolean(card.status) && card.valid);
+      status.classList.toggle("is-ok", ok);
+    }
     const clockEl = stage.querySelector(".local-clock");
     if (clockEl) clockEl.textContent = t(this.lang, "localClock", { time: formatLocalClock() });
     const name = stage.querySelector<HTMLInputElement>(".name-input");
@@ -492,7 +500,11 @@ export class GeneratorPanel {
     if (clearBtn) clearBtn.hidden = noSecret;
     const canCam = camScanSupported();
     stage.querySelectorAll<HTMLButtonElement>(".scan-empty").forEach((btn) => {
-      btn.hidden = card.valid;
+      if (btn.classList.contains("scan-row")) {
+        btn.hidden = card.valid || noSecret;
+      } else {
+        btn.hidden = card.valid;
+      }
     });
     stage.querySelectorAll<HTMLButtonElement>(".cam-empty").forEach((btn) => {
       btn.hidden = card.valid || !canCam;
@@ -628,7 +640,9 @@ export class GeneratorPanel {
     top.hidden = !card.secret.trim() && this.cards.length === 1;
 
     const board = document.createElement("div");
-    board.className = card.valid ? "otp-board has-code" : "otp-board";
+    board.className = "otp-board";
+    if (card.valid) board.classList.add("has-code");
+    if (!card.secret.trim()) board.classList.add("is-empty");
     const codeRow = document.createElement("div");
     codeRow.className = "code-row";
     codeRow.hidden = !card.valid;
@@ -681,20 +695,25 @@ export class GeneratorPanel {
     emptyCta.type = "button";
     emptyCta.className = "primary-btn empty-cta";
     emptyCta.textContent = t(this.lang, "emptyCta");
-    emptyCta.hidden = Boolean(card.secret.trim());
     emptyCta.addEventListener("click", (ev) => {
       ev.stopPropagation();
       const secretInput = this.root.querySelector<HTMLInputElement>(".secret-input");
       if (secretInput) void this.paste(card, secretInput);
     });
+    const emptyUpload = this.scanButton(card, "scan-empty");
+    emptyUpload.classList.add("secondary-btn");
+    const emptyActions = document.createElement("div");
+    emptyActions.className = "empty-actions";
+    emptyActions.hidden = Boolean(card.secret.trim());
+    emptyActions.append(emptyCta, emptyUpload);
     const dropHint = document.createElement("p");
     dropHint.className = "drop-hint";
     dropHint.textContent = t(this.lang, "pasteHint");
     dropHint.hidden = card.valid;
-    board.append(codeRow, bar, chip, nextEl, hint, copyCodeBtn, emptyCta, dropHint);
+    board.append(codeRow, bar, chip, nextEl, hint, copyCodeBtn, emptyActions, dropHint);
     board.addEventListener("click", (ev) => {
       if (!card.valid) return;
-      if (ev.target instanceof HTMLElement && ev.target.closest(".empty-cta, .copy-code-btn")) return;
+      if (ev.target instanceof HTMLElement && ev.target.closest(".empty-cta, .copy-code-btn, .empty-actions")) return;
       void this.copy(card);
     });
 
@@ -746,8 +765,9 @@ export class GeneratorPanel {
       secret.type = this.secretVisible ? "text" : "password";
       hideBtn.textContent = t(this.lang, this.secretVisible ? "hideSecret" : "showSecret");
     });
-    const scanEmpty = this.scanButton(card, "scan-empty");
-    scanEmpty.hidden = card.valid;
+    const scanRow = this.scanButton(card, "scan-empty scan-row");
+    // Empty state already shows Upload QR in .empty-actions; keep a row button for invalid secrets.
+    scanRow.hidden = card.valid || !card.secret.trim();
     const camEmpty = this.camButton(card, "cam-empty");
     camEmpty.hidden = card.valid || !camScanSupported();
     const clear = document.createElement("button");
@@ -771,7 +791,7 @@ export class GeneratorPanel {
       this.persistSession();
       void this.tick();
     });
-    row.append(secret, hideBtn, scanEmpty, camEmpty, clear);
+    row.append(secret, hideBtn, scanRow, camEmpty, clear);
 
     const extra = document.createElement("details");
     extra.className = "more-actions";
@@ -967,11 +987,14 @@ export class GeneratorPanel {
 
   private flashCopied() {
     const board = this.root.querySelector<HTMLElement>(".otp-board");
-    if (!board) return;
-    board.classList.add("is-copied");
+    const status = this.root.querySelector<HTMLElement>(".status");
+    if (board) board.classList.add("is-copied");
+    if (status) {
+      status.classList.add("is-toast", "is-ok");
+    }
     if (this.copiedTimer != null) window.clearTimeout(this.copiedTimer);
     this.copiedTimer = window.setTimeout(() => {
-      board.classList.remove("is-copied");
+      board?.classList.remove("is-copied");
       this.copiedTimer = null;
     }, 1200);
   }
