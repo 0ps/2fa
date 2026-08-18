@@ -1,22 +1,22 @@
 # 本地 TOTP / 2FA 生成器
 
-浏览器里用的一次性验证码工作台。RFC 6238 TOTP，HMAC 走 Web Crypto，没有账号、没有广告。密钥不会离开这台设备。
+浏览器里的一次性验证码工作台。[RFC 6238](https://www.rfc-editor.org/rfc/rfc6238) TOTP，HMAC 走本机 [Web Crypto](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)，没有账号、没有后端、没有广告。密钥不会上传。
 
-打开就能 `Ctrl+V` 粘贴 Base32 或 `otpauth://`，也可以把二维码图片拖进来。验证码很大，点一下就复制。
+打开就能 `Ctrl+V` 粘贴 Base32 或 `otpauth://`，也可以上传、拖入或粘贴二维码截图。验证码很大，点一下就复制。本浏览器用 `localStorage` 记住你加过的账号，关掉标签页再开还在，直到你自行清除。
 
-截图用的是 RFC 6238 附录 B 的公开演示密钥，不是真实账号。
+在线：代码在 [github.com/0ps/2fa](https://github.com/0ps/2fa)。截图用的是 RFC 6238 附录 B 的公开演示密钥 `GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ`，不是真实账号。
 
 ## 界面预览
 
-空状态：贴密钥或拖二维码，卡片跟着内容走，不会撑满一屏。
+空状态只留粘贴和上传入口，卡片跟着内容走，不撑满一屏。
 
-![空状态：粘贴密钥](docs/screenshots/empty.png)
+![空状态：粘贴密钥或上传二维码](docs/screenshots/empty.png)
 
-贴上之后，验证码是主角。密钥自动隐藏。点验证码或「点击复制」写入剪贴板。
+贴上之后，验证码是主角。旁边是大号倒计时。密钥自动隐藏。点验证码或「点击复制」写入剪贴板。
 
 ![有验证码的工作台](docs/screenshots/home.png)
 
-同一个页面可以加多个互不干扰的生成器。
+同一个页面可以加多个互不干扰的生成器。上传多张二维码会一次加上多个账号，重复密钥会跳过。
 
 ![多账号](docs/screenshots/multi.png)
 
@@ -32,57 +32,62 @@ SHA-256 落地页默认就是 SHA-256。位数、周期、算法、时间校准�
 
 ![中文网站地图](docs/screenshots/sitemap.png)
 
-隐私说明：密钥不写磁盘、不进 Cookie、不上传服务器。
+隐私说明：密钥只留在本机浏览器，不进 Cookie、不上传服务器。
 
 ![隐私页](docs/screenshots/privacy.png)
 
-## 用法
-
-- 打开页面即可粘贴。`Ctrl+V` / `Cmd+V`，或点「粘贴设置密钥」
-- 点大号验证码复制；状态会显示「已复制 123456」
-- 剩余 5 秒时预告下一组；剩余 2 秒时复制的是下一组，避免贴过去已经过期
-- 密钥贴上后自动隐藏，可点「显示」
-- 验证码对不上时，在「TOTP 选项」里校准时间（±90 秒）。右下角有本机时钟可对照手机
-- 「更多操作」里可以复制 otpauth 链接、显示给手机扫的二维码、用摄像头扫码（浏览器支持时）
-- 多行粘贴会一次加上多个账号
-- 刷新当前标签页还在；关掉标签页密钥即消失
-
 ## 功能
 
-- SHA-1 / SHA-256 / SHA-512，6 或 8 位，周期 10–120 秒
-- SHA-256、SHA-512、8 位等落地页有各自的默认参数
-- 识别 otpauth 链接（自动读 secret、算法、位数、周期、issuer）
-- 本地识别二维码图片和摄像头扫码，不上传
-- URL 快捷填入：优先 `#secret=`，也支持 query 和非保留路径
-- 21 种语言（含简体/繁体中文），阿拉伯语 RTL
-- 指南、FAQ、兼容性矩阵收在生成器页的「使用说明」里
-- robots、llms.txt、sitemap、PWA manifest
+- **粘贴即用**：打开页面即可 `Ctrl+V` / `Cmd+V`（不必先点输入框）。识别 Base32、多行密钥、`otpauth://` 链接（secret、算法、位数、周期、issuer）
+- **二维码**：上传多张图片、拖放、剪贴板截图，都在浏览器里用 `BarcodeDetector` 解码，不上传。当前卡片没密钥就填进去，已有密钥就新加一张；规范化后重复的密钥跳过。浏览器支持时也可用摄像头扫码
+- **大号验证码**：分组显示，旁边是大号剩余秒数。点验证码或「点击复制」。贴上密钥、扫码成功、周期翻到下一组时自动复制。剩余 5 秒预告下一组；剩余 2 秒时复制的是下一组，避免贴过去已经过期
+- **本机历史**：刷新或关掉标签页后再打开，账号还在。空密钥不入库。可在「更多操作」里「清除本机记录」
+- **多生成器**：同一页多张卡片，参数互不影响。`n` 添加，`c` 复制当前码
+- **参数**：SHA-1 / SHA-256 / SHA-512，6 或 8 位，周期 10–120 秒。时间校准 ±90 秒。右下角有本机时钟，方便对照手机
+- **落地页**：`/sha256-totp-generator` 等路径带各自默认算法/位数；指南和 FAQ 收在生成器页的「使用说明」
+- **快捷填入**：优先 URL `#secret=`（不会进访问日志），也支持 query 和非保留路径，加载后尽量改写到 fragment
+- **导出**：复制当前或全部 `otpauth://` 链接，显示给手机扫的二维码（`qrcode` 在本地画图）
+- **21 种语言**（含简体/繁体中文），阿拉伯语 RTL。语言记在本机
+- robots、`llms.txt`、sitemap、PWA manifest
+
+## 方案
+
+这是一个 **local-first 静态站**，不是带账号的验证器服务。
+
+1. **计算全在浏览器里。** Vite 打出的 HTML/CSS/JS 放到 GitHub Pages。下载之后，Base32 解码、HMAC、动态截断都不需要网络。没有 API、没有 cookie 会话。
+2. **工作台是主界面。** 生成器页把文档收进折叠区，默认给你一张卡片：大验证码、倒计时、粘贴/上传。空卡片不撑满屏幕。
+3. **本机保险箱，不上传。** 有密钥的卡片写入 `localStorage` 键 `totpLocalVault`，并镜像到 `sessionStorage` 键 `totpSessionCards`。字段：名称、密钥、算法、位数、周期、时间偏移。密钥按大写并去掉空格/连字符去重。全部清空时仍写入 `{cards:[], timeOffset}`，这样「清除」不会被旧 session 顶回来。
+4. **加载顺序。** URL 引导（`#secret=` 等）优先占第一张卡片；否则用 local vault（有卡片时）；否则用 session；否则一张空卡片。从 local 载入时会同步到 session。
+5. **二维码只走本地。** 文件/拖放/粘贴图片都进同一条 `decodeQrImage` → `applyDecodedSecret`。解码用浏览器 `BarcodeDetector`，图片不离开这台设备。填或加由「当前是否已有密钥 + 是否重复」决定。
+6. **分享链接用 fragment。** `#secret=` 不会出现在服务器访问日志。query/path 形式为了兼容而存在，页面加载后会尽量改写到 hash。
+
+本站不冒充任何厂商验证器。登记 ChatGPT、Google、Microsoft 等账户仍应使用官方应用。这里是本地计算器，并说明这些应用实现的 TOTP 参数。
+
+## 技术
+
+| 层 | 实现 |
+| --- | --- |
+| 运行时 | 静态站点，Vite 7 + TypeScript。无后端 |
+| 路由 | `src/routes.ts` 里的落地页/指南/工具页；生成器由 `src/generator.ts` 挂到带 `showGenerator` 的页面 |
+| TOTP | `src/totp.ts`：RFC 6238 计数器（unix / period 的 8 字节大端）、`crypto.subtle` HMAC、动态截断 |
+| 算法 | SHA-1 / SHA-256 / SHA-512；默认首页 SHA-1 + 6 位 + 30 秒 |
+| Base32 | `src/base32.ts`，字母表 A–Z2–7，去掉空格、连字符和 padding |
+| otpauth | `src/otpauth.ts` 解析/生成 `otpauth://totp/...` |
+| 保险箱 | `src/vault.ts`：`loadVault` / `saveVault` / `normalizeSecret` / `fillOrAddAction` |
+| 二维码识别 | 浏览器 [BarcodeDetector](https://developer.mozilla.org/en-US/docs/Web/API/BarcodeDetector)（`qr_code`） |
+
+
+## 用法
+- Ctrl+V / Cmd+V 粘贴 Base32 或 otpauth
+- 上传二维码可多选，也可拖放或粘贴截图
+- 点大号验证码复制；最后 5 秒预告下一组
+- 更多操作 → 清除本机记录
 
 ## 隐私
-
-- 设置密钥、otpauth、验证码、卡片名称只留在当前标签页（`sessionStorage`），关掉即没
-- 应用写入的唯一 `localStorage` 键是语言偏好 `totpPreferredLanguage`
-- 分享临时链接请用 hash fragment，不要把密钥放进会进访问日志的 query
-- 二维码只在浏览器本地解码
+- 密钥写入 totpLocalVault，不上传
+- 语言 totpPreferredLanguage
+- 清除本机记录可清空
+- 二维码本机解码；分享用 #secret=
 
 ## 本地开发
-
-```bash
-npm install
-npm run dev
-```
-
-中文界面：在 URL 上加 `?lang=zh`。
-
-## 测试和构建
-
-```bash
-npm test
-npm run build
-```
-
-测试覆盖 Base32、otpauth、RFC 6238 附录 B 全部 8 位向量（注入 unix 时间，不依赖系统时钟）。向量文件在 `public/rfc6238-test-vectors.json`。
-
-## GitHub Pages
-
-推送到 `main` 后，`.github/workflows/pages.yml` 会安装、测试、构建并发布 `dist`。仓库 Settings → Pages 里选 GitHub Actions 即可上线。
+中文：?lang=zh。推送 main 发布 GitHub Pages。
