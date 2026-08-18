@@ -69,3 +69,33 @@ export function parseOtpAuth(uri: string): OtpAuthTotp {
 export function displayNameFromOtpAuth(parsed: OtpAuthTotp): string {
   return parsed.issuer || parsed.label || parsed.account;
 }
+
+function algorithmParam(algorithm: TotpAlgorithm): "SHA1" | "SHA256" | "SHA512" {
+  if (algorithm === "SHA-256") return "SHA256";
+  if (algorithm === "SHA-512") return "SHA512";
+  return "SHA1";
+}
+
+export interface OtpAuthBuild {
+  name: string;
+  secret: string;
+  algorithm: TotpAlgorithm;
+  digits: 6 | 8;
+  period: number;
+  issuer?: string;
+}
+
+export function toOtpAuthUri(card: OtpAuthBuild): string {
+  const secret = card.secret.replace(/\s+/g, "");
+  const name = card.name.trim();
+  const issuer = (card.issuer ?? name).trim();
+  const label = encodeURIComponent(name || issuer || "TOTP");
+  const parts = [
+    `secret=${encodeURIComponent(secret)}`,
+    issuer ? `issuer=${encodeURIComponent(issuer)}` : "",
+    `algorithm=${algorithmParam(card.algorithm)}`,
+    `digits=${card.digits}`,
+    `period=${card.period}`,
+  ].filter(Boolean);
+  return `otpauth://totp/${label}?${parts.join("&")}`;
+}

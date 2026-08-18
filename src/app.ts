@@ -112,12 +112,14 @@ export function render() {
   const bootstrap = extractUrlSecret(location, RING_RESERVED, baseUrl())?.secret;
 
   if (!route) {
+    document.body.classList.remove("is-tool");
     document.title = t(lang, "notFound");
-    app.innerHTML = shell(lang, resolved.selectValue, null, `<h1 tabindex="-1">${t(lang, "notFound")}</h1><p>${t(lang, "notFoundBody")}</p><p><a href="${joinBase("/")}">${t(lang, "ctaTools")}</a></p>`);
+    app.innerHTML = shell(lang, resolved.selectValue, null, `<div class="docs"><div class="page-head"><h1 tabindex="-1">${t(lang, "notFound")}</h1><p class="intro">${t(lang, "notFoundBody")}</p></div><p><a href="${joinBase("/")}">${t(lang, "ctaTools")}</a></p></div>`);
     bindChrome(lang);
     return;
   }
 
+  document.body.classList.toggle("is-tool", Boolean(route.showGenerator));
   document.title = pickText(lang, route.titles);
   const desc = document.querySelector('meta[name="description"]');
   if (desc) desc.setAttribute("content", pickText(lang, route.descriptions));
@@ -127,14 +129,17 @@ export function render() {
   const tools = allRoutes().filter((r) => r.kind === "tool").slice(0, 8);
   const guides = allRoutes().filter((r) => r.kind === "guide").slice(0, 8);
   const related = `<div class="related"><section><h2>${t(lang, "relatedTools")}</h2>${linkList(tools, lang)}</section><section><h2>${t(lang, "relatedGuides")}</h2>${linkList(guides, lang)}</section></div>`;
-  const genMount = route.showGenerator ? `<div id="generator-root"></div>` : "";
   const matrix = route.showMatrix
     ? `<section><h2>${t(lang, "matrixTitle")}</h2><p>${t(lang, "matrixCaption")}</p>${renderMatrix()}</section>`
     : "";
   const map = route.path === "/site-map" ? sitemapHtml(lang) : "";
-  const main = `<h1 tabindex="-1">${pickText(lang, route.h1)}</h1><p class="intro">${pickText(lang, route.intro)}</p>${genMount}${route.body ? pickText(lang, route.body) : ""}${map}${matrix}${faqHtml}${related}`;
+  const pageHead = `<div class="page-head"><h1 tabindex="-1">${pickText(lang, route.h1)}</h1><p class="intro">${pickText(lang, route.intro)}</p></div>`;
+  const docsInner = `${route.body ? pickText(lang, route.body) : ""}${map}${matrix}${faqHtml}${related}`;
+  const main = route.showGenerator
+    ? `${pageHead}<div id="generator-root"></div><details class="more-docs"><summary>${t(lang, "moreDocs")}</summary><div class="docs">${docsInner}</div></details>`
+    : `<div class="docs">${pageHead}${docsInner}</div>`;
 
-  app.innerHTML = shell(lang, resolved.selectValue, route, main);
+  app.innerHTML = shell(lang, resolved.selectValue, route, main, route.showGenerator);
   bindChrome(lang);
   const genRoot = document.getElementById("generator-root");
   if (genRoot && route.showGenerator) {
@@ -146,35 +151,44 @@ export function render() {
     ld.textContent = jsonLd(route, lang);
     document.getElementById("content")?.append(ld);
   }
-  document.querySelector("h1")?.focus();
+  if (!route.showGenerator) document.querySelector("h1")?.focus();
 }
 
-function shell(lang: Lang, selectValue: string, _route: RouteDef | null, main: string): string {
+function chromeNav(lang: Lang, compact: boolean): string {
+  const anchors = [
+    `<a href="${joinBase("/")}">${t(lang, "navHome")}</a>`,
+    `<a href="${joinBase("/totp-generator")}">${t(lang, "navTools")}</a>`,
+    `<a href="${joinBase("/what-is-totp")}">${t(lang, "navGuides")}</a>`,
+    `<a href="${joinBase("/site-map")}">${t(lang, "navSitemap")}</a>`,
+    `<a href="${joinBase("/privacy")}">${t(lang, "navPrivacy")}</a>`,
+    `<a href="${joinBase("/about")}">${t(lang, "navAbout")}</a>`,
+  ].join("");
+  if (compact) {
+    return `<details class="more-nav"><summary>${t(lang, "moreNav")}</summary><div class="more-nav-panel">${anchors}</div></details>`;
+  }
+  return `<nav aria-label="${t(lang, "navHome")}">${anchors}</nav>`;
+}
+
+function shell(lang: Lang, selectValue: string, _route: RouteDef | null, main: string, withGenerator = false): string {
   const langOpts = [`<option value="auto">${t(lang, "langAuto")}</option>`]
     .concat(LANGS.map((l) => `<option value="${l}"${selectValue === l ? " selected" : ""}>${LANG_LABELS[l]}</option>`))
     .join("");
   const selectedAuto = selectValue === "auto" ? " selected" : "";
   const opts = langOpts.replace('<option value="auto">', `<option value="auto"${selectedAuto}>`);
+  const mainClass = withGenerator ? ' class="has-generator is-tool"' : "";
+  const footerClass = withGenerator ? "site-footer is-tool-footer" : "site-footer";
   return `
 <a class="skip" href="#content">${t(lang, "skip")}</a>
-<header class="site-header">
+<header class="topbar">
   <a class="brand" href="${joinBase("/")}">${t(lang, "appName")}</a>
-  <p class="tagline">${t(lang, "tagline")}</p>
-  <nav aria-label="${t(lang, "navHome")}">
-    <a href="${joinBase("/")}">${t(lang, "navHome")}</a>
-    <a href="${joinBase("/totp-generator")}">${t(lang, "navTools")}</a>
-    <a href="${joinBase("/what-is-totp")}">${t(lang, "navGuides")}</a>
-    <a href="${joinBase("/site-map")}">${t(lang, "navSitemap")}</a>
-    <a href="${joinBase("/privacy")}">${t(lang, "navPrivacy")}</a>
-    <a href="${joinBase("/about")}">${t(lang, "navAbout")}</a>
-  </nav>
+  ${chromeNav(lang, withGenerator)}
   <label class="lang-label">${t(lang, "lang")}
     <select id="lang-select">${opts}</select>
   </label>
 </header>
-<p class="banner">${t(lang, "privacyBanner")}</p>
-<main id="content">${main}</main>
-<footer class="site-footer">
+<main id="content"${mainClass}>${main}</main>
+<footer class="${footerClass}">
+  <p class="privacy-note">${t(lang, "privacyBanner")}</p>
   <p>${t(lang, "footerNote")}</p>
   <p>
     <a href="https://www.rfc-editor.org/rfc/rfc6238" rel="noopener">${t(lang, "footerRfc6238")}</a>
