@@ -966,19 +966,15 @@
       const stored = pickStoredPayload(local, session);
       if (stored) this.timeOffset = stored.payload.timeOffset;
       let restoreSecret;
-      if (bootstrapSecret2) {
-        const first = newCard(defaults);
-        applySecretInput(first, bootstrapSecret2, lang);
-        this.cards.push(first);
-      } else if (stored) {
-        this.cards = sortPinnedFirst(stored.payload.cards.map((c) => cardFromPersisted(c, defaults)));
+      if (stored) {
+        this.cards = sortPinnedFirst(stored.payload.cards.filter((c) => !isNoiseSecret(c.secret)).map((c) => cardFromPersisted(c, defaults)));
         restoreSecret = stored.payload.selectedSecret;
         if (stored.from === "local") {
           try {
             saveVault(
               browserStorage("session"),
               SESSION_KEY,
-              stored.payload.cards,
+              this.cards,
               stored.payload.timeOffset,
               stored.payload.selectedSecret
             );
@@ -986,8 +982,27 @@
           }
         }
       }
+      if (bootstrapSecret2) {
+        if (!this.cards.length) this.cards.push(newCard(defaults));
+        const current = this.cards[0];
+        const decoded = decodedSecret(bootstrapSecret2) || bootstrapSecret2;
+        const dup = hasDuplicateSecret(this.cards, decoded);
+        const action = fillOrAddAction(Boolean(current && current.secret.trim()), dup);
+        if (action === "fill") {
+          applySecretInput(current, bootstrapSecret2, lang);
+          restoreSecret = current.secret;
+        } else if (action === "add") {
+          const extra = newCard(defaults);
+          applySecretInput(extra, bootstrapSecret2, lang);
+          this.cards.push(extra);
+          restoreSecret = extra.secret;
+        } else {
+          restoreSecret = decoded;
+        }
+      }
       if (!this.cards.length) this.cards.push(newCard(defaults));
       this.selectedId = this.cards[matchingCardIndex(this.cards, restoreSecret)].id;
+      this.persistSession();
       this.render();
       void this.tick();
       this.timer = window.setInterval(() => {
@@ -2195,7 +2210,7 @@
   var DEFAULTS = { algorithm: "SHA-1", digits: 6, period: 30 };
 
   // ../tmp/html-port/url-secret.ts
-  var SECRET_PARAM_KEYS = ["secret", "code", "key", "otp", "totp"];
+  var SECRET_PARAM_KEYS = ["secret", "code", "key", "otp"];
   function pathFromLocation(pathname, baseUrl) {
     let path = pathname || "/";
     let base = baseUrl || "/";
@@ -2221,51 +2236,42 @@
       if (hashRaw.includes("=")) {
         const fromHash = firstParam(new URLSearchParams(hashRaw));
         if (fromHash) return { secret: fromHash, source: "hash" };
-      } else {
-        try {
-          const bare = decodeURIComponent(hashRaw);
-          if (bare) return { secret: bare, source: "hash" };
-        } catch {
-          return { secret: hashRaw, source: "hash" };
-        }
       }
     }
     const fromQuery = firstParam(new URLSearchParams(loc.search));
     if (fromQuery) return { secret: fromQuery, source: "query" };
-    const path = pathFromLocation(loc.pathname, baseUrl);
-    if (path !== "/" && !reserved.has(path)) {
-      const candidate = path.slice(1);
-      if (candidate && !candidate.includes("/")) {
-        try {
-          return { secret: decodeURIComponent(candidate), source: "path" };
-        } catch {
-          return { secret: candidate, source: "path" };
-        }
-      }
-    }
     return null;
   }
 
   // ../tmp/html-port/main.ts
   var EMPTY_RESERVED = /* @__PURE__ */ new Set();
   var panel = null;
-  function rewriteQuerySecretToHash(secret) {
+  function stripSecretFromLocation() {
     const params = new URLSearchParams(location.search);
-    let changed = false;
-    for (const key of ["secret", "code", "key", "otp", "totp"]) {
-      if (params.has(key)) {
-        params.delete(key);
-        changed = true;
-      }
-    }
-    if (!changed) return;
+    for (const key of SECRET_PARAM_KEYS) params.delete(key);
     const search = params.toString() ? "?" + params.toString() : "";
-    history.replaceState({}, "", location.pathname + search + "#secret=" + encodeURIComponent(secret));
+    let nextHash = "";
+    const hashRaw = location.hash.startsWith("#") ? location.hash.slice(1) : location.hash;
+    if (hashRaw && hashRaw.includes("=")) {
+      const hp = new URLSearchParams(hashRaw);
+      for (const key of SECRET_PARAM_KEYS) hp.delete(key);
+      const hs = hp.toString();
+      if (hs) nextHash = "#" + hs;
+    }
+    try {
+      history.replaceState({}, "", location.pathname + search + nextHash);
+    } catch {
+    }
+  }
+  function isNoiseSecret(value) {
+    const n = (value || "").toUpperCase().replace(/[\s-]/g, "");
+    return n === "TOTP" || n === "2FA" || n === "INDEX.HTML" || n === "INDEX.HTM";
   }
   function bootstrapSecret() {
     const extracted = extractUrlSecret(location, EMPTY_RESERVED, "/");
     if (!extracted) return void 0;
-    if (extracted.source !== "hash") rewriteQuerySecretToHash(extracted.secret);
+    stripSecretFromLocation();
+    if (isNoiseSecret(extracted.secret)) return void 0;
     return extracted.secret;
   }
   function render() {
