@@ -3,8 +3,8 @@
 A local-first static website that computes RFC 6238 TOTP codes in the browser with Web Crypto HMAC.
 
 ## Privacy
-- Secrets are never persisted.
-- The only localStorage key is totpPreferredLanguage.
+- Secrets never leave the device / never go to a server.
+- localStorage keys: totpPreferredLanguage (language) and totpLocalVault (optional local history).
 - Prefer #secret= URL fragments; query and path forms are supported then rewritten.
 
 ## Crypto
