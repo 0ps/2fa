@@ -9,11 +9,13 @@ export interface PersistedCard {
   algorithm: TotpAlgorithm;
   digits: 6 | 8;
   period: number;
+  pinned?: boolean;
 }
 
 export interface VaultPayload {
   cards: PersistedCard[];
   timeOffset: number;
+  selectedSecret?: string;
 }
 
 export type StorageLike = {
@@ -52,6 +54,18 @@ function sanitizePeriod(value: unknown): number {
   return Math.min(120, Math.max(10, Math.round(value)));
 }
 
+function sanitizeCard(raw: PersistedCard, secret: string): PersistedCard {
+  const card: PersistedCard = {
+    name: typeof raw.name === "string" ? raw.name : "",
+    secret,
+    algorithm: isAlgorithm(raw.algorithm) ? raw.algorithm : "SHA-1",
+    digits: raw.digits === 8 ? 8 : 6,
+    period: sanitizePeriod(raw.period),
+  };
+  if (raw.pinned) card.pinned = true;
+  return card;
+}
+
 export function dedupePersistedCards(cards: PersistedCard[]): PersistedCard[] {
   const seen = new Set<string>();
   const out: PersistedCard[] = [];
@@ -61,15 +75,92 @@ export function dedupePersistedCards(cards: PersistedCard[]): PersistedCard[] {
     const key = normalizeSecret(secret);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    out.push({
-      name: typeof raw.name === "string" ? raw.name : "",
-      secret,
-      algorithm: isAlgorithm(raw.algorithm) ? raw.algorithm : "SHA-1",
-      digits: raw.digits === 8 ? 8 : 6,
-      period: sanitizePeriod(raw.period),
-    });
+    out.push(sanitizeCard(raw, secret));
   }
   return out;
+}
+
+export function sortPinnedFirst<T extends { pinned?: boolean }>(cards: T[]): T[] {
+  const pinned: T[] = [];
+  const rest: T[] = [];
+  for (const card of cards) {
+    if (card.pinned) pinned.push(card);
+    else rest.push(card);
+  }
+  return [...pinned, ...rest];
+}
+
+export function cardMatchesQuery(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return name.toLowerCase().includes(q);
+}
+
+export function filterCardsByQuery<T extends { name: string; secret: string }>(cards: T[], query: string): T[] {
+  const q = query.trim();
+  if (!q) return cards;
+  return cards.filter((card) => Boolean(card.secret.trim()) && cardMatchesQuery(card.name, q));
+}
+
+export function matchingCardIndex(cards: Array<{ secret: string }>, selectedSecret?: string): number {
+  const key = selectedSecret ? normalizeSecret(selectedSecret) : "";
+  if (key) {
+    const idx = cards.findIndex((card) => Boolean(card.secret.trim()) && normalizeSecret(card.secret) === key);
+    if (idx >= 0) return idx;
+  }
+  return 0;
+}
+
+export function mergeBackupCards(current: PersistedCard[], incoming: PersistedCard[]): PersistedCard[] {
+  const result: PersistedCard[] = current.map((card) => ({ ...card }));
+  for (const card of dedupePersistedCards(incoming)) {
+    const key = normalizeSecret(card.secret);
+    const existing = result.find((c) => Boolean(c.secret.trim()) && normalizeSecret(c.secret) === key);
+    if (existing) {
+      if (card.name.trim()) existing.name = card.name;
+      if (card.pinned) existing.pinned = true;
+      continue;
+    }
+    const empty = result.find((c) => !c.secret.trim());
+    if (empty) {
+      empty.name = card.name;
+      empty.secret = card.secret;
+      empty.algorithm = card.algorithm;
+      empty.digits = card.digits;
+      empty.period = card.period;
+      if (card.pinned) empty.pinned = true;
+      else delete empty.pinned;
+    } else {
+      result.push({ ...card });
+    }
+  }
+  return result;
+}
+
+export function buildVaultPayload(
+  cards: PersistedCard[],
+  timeOffset: number,
+  selectedSecret?: string,
+): VaultPayload {
+  const payload: VaultPayload = {
+    cards: dedupePersistedCards(cards),
+    timeOffset: clampOffset(timeOffset),
+  };
+  const key = selectedSecret ? normalizeSecret(selectedSecret) : "";
+  if (key && payload.cards.some((card) => normalizeSecret(card.secret) === key)) {
+    payload.selectedSecret = key;
+  }
+  return payload;
+}
+
+export function vaultBackupJson(cards: PersistedCard[], timeOffset: number, selectedSecret?: string): string {
+  return JSON.stringify(buildVaultPayload(cards, timeOffset, selectedSecret), null, 2);
+}
+
+function readSelectedSecret(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const key = normalizeSecret(value);
+  return key || undefined;
 }
 
 export function parseVaultJson(raw: string | null): VaultPayload | null {
@@ -80,9 +171,12 @@ export function parseVaultJson(raw: string | null): VaultPayload | null {
       return { cards: dedupePersistedCards(data as PersistedCard[]), timeOffset: 0 };
     }
     if (!data || typeof data !== "object") return null;
-    const rec = data as { cards?: unknown; timeOffset?: unknown };
+    const rec = data as { cards?: unknown; timeOffset?: unknown; selectedSecret?: unknown };
     const cards = Array.isArray(rec.cards) ? dedupePersistedCards(rec.cards as PersistedCard[]) : [];
-    return { cards, timeOffset: clampOffset(Number(rec.timeOffset) || 0) };
+    const payload: VaultPayload = { cards, timeOffset: clampOffset(Number(rec.timeOffset) || 0) };
+    const selectedSecret = readSelectedSecret(rec.selectedSecret);
+    if (selectedSecret) payload.selectedSecret = selectedSecret;
+    return payload;
   } catch {
     return null;
   }
@@ -102,13 +196,10 @@ export function saveVault(
   key: string,
   cards: PersistedCard[],
   timeOffset: number,
+  selectedSecret?: string,
 ): void {
   if (!storage) return;
-  const payload: VaultPayload = {
-    cards: dedupePersistedCards(cards),
-    timeOffset: clampOffset(timeOffset),
-  };
-  storage.setItem(key, JSON.stringify(payload));
+  storage.setItem(key, JSON.stringify(buildVaultPayload(cards, timeOffset, selectedSecret)));
 }
 
 export function pickStoredPayload(

@@ -9,10 +9,16 @@ import {
   VAULT_KEY,
   clampOffset,
   fillOrAddAction,
+  filterCardsByQuery,
   hasDuplicateSecret,
   loadVault,
+  matchingCardIndex,
+  mergeBackupCards,
+  parseVaultJson,
   pickStoredPayload,
   saveVault,
+  sortPinnedFirst,
+  vaultBackupJson,
   type PersistedCard,
   type StorageLike,
 } from "./vault";
@@ -24,6 +30,7 @@ export interface CardState {
   algorithm: TotpAlgorithm;
   digits: 6 | 8;
   period: number;
+  pinned: boolean;
   code: string;
   nextCode: string;
   valid: boolean;
@@ -147,11 +154,29 @@ function newCard(defaults: TotpDefaults): CardState {
     algorithm: defaults.algorithm,
     digits: defaults.digits,
     period: defaults.period,
+    pinned: false,
     code: "------",
     nextCode: "------",
     valid: false,
     status: "",
   };
+}
+
+function pinIcon(): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "14");
+  svg.setAttribute("height", "14");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "currentColor");
+  path.setAttribute(
+    "d",
+    "M16 9V4h1V2H7v2h1v5c0 1.66-1.34 3-3 3v2h5.2V22h1.6v-8H19v-2c-1.66 0-3-1.34-3-3z",
+  );
+  svg.append(path);
+  return svg;
 }
 
 function isAlgorithm(value: unknown): value is TotpAlgorithm {
@@ -167,6 +192,7 @@ function cardFromPersisted(raw: PersistedCard, defaults: TotpDefaults): CardStat
   if (typeof raw.period === "number" && Number.isFinite(raw.period)) {
     card.period = Math.min(120, Math.max(10, Math.round(raw.period)));
   }
+  card.pinned = Boolean(raw.pinned) && Boolean(card.secret.trim());
   return card;
 }
 
@@ -174,6 +200,7 @@ function applySecretInput(card: CardState, raw: string, lang: Lang) {
   const value = raw.trim();
   if (!value) {
     card.secret = "";
+    card.pinned = false;
     card.valid = false;
     card.code = "------";
     card.nextCode = "------";
@@ -263,6 +290,8 @@ export class GeneratorPanel {
   private camTimer: number | null = null;
   private camActive = false;
   private lastAutoCode = "";
+  private searchQuery = "";
+  private backupInput: HTMLInputElement | null = null;
 
   constructor(root: HTMLElement, lang: Lang, defaults: TotpDefaults, bootstrapSecret?: string) {
     this.root = root;
@@ -272,22 +301,30 @@ export class GeneratorPanel {
     const session = loadVault(browserStorage("session"), SESSION_KEY);
     const stored = pickStoredPayload(local, session);
     if (stored) this.timeOffset = stored.payload.timeOffset;
+    let restoreSecret: string | undefined;
     if (bootstrapSecret) {
       const first = newCard(defaults);
       applySecretInput(first, bootstrapSecret, lang);
       this.cards.push(first);
     } else if (stored) {
-      this.cards = stored.payload.cards.map((c) => cardFromPersisted(c, defaults));
+      this.cards = sortPinnedFirst(stored.payload.cards.map((c) => cardFromPersisted(c, defaults)));
+      restoreSecret = stored.payload.selectedSecret;
       if (stored.from === "local") {
         try {
-          saveVault(browserStorage("session"), SESSION_KEY, stored.payload.cards, stored.payload.timeOffset);
+          saveVault(
+            browserStorage("session"),
+            SESSION_KEY,
+            stored.payload.cards,
+            stored.payload.timeOffset,
+            stored.payload.selectedSecret,
+          );
         } catch {
           /* private mode / quota */
         }
       }
     }
     if (!this.cards.length) this.cards.push(newCard(defaults));
-    this.selectedId = this.cards[0].id;
+    this.selectedId = this.cards[matchingCardIndex(this.cards, restoreSecret)].id;
     this.render();
     void this.tick();
     this.timer = window.setInterval(() => {
@@ -313,24 +350,29 @@ export class GeneratorPanel {
   }
 
   private snapshotCards(): PersistedCard[] {
-    return this.cards.map((c) => ({
-      name: c.name,
-      secret: c.secret,
-      algorithm: c.algorithm,
-      digits: c.digits,
-      period: c.period,
-    }));
+    return this.cards.map((c) => {
+      const row: PersistedCard = {
+        name: c.name,
+        secret: c.secret,
+        algorithm: c.algorithm,
+        digits: c.digits,
+        period: c.period,
+      };
+      if (c.pinned && c.secret.trim()) row.pinned = true;
+      return row;
+    });
   }
 
   private persistSession() {
     const cards = this.snapshotCards();
+    const selected = this.selected()?.secret;
     try {
-      saveVault(browserStorage("session"), SESSION_KEY, cards, this.timeOffset);
+      saveVault(browserStorage("session"), SESSION_KEY, cards, this.timeOffset, selected);
     } catch {
       /* private mode / quota */
     }
     try {
-      saveVault(browserStorage("local"), VAULT_KEY, cards, this.timeOffset);
+      saveVault(browserStorage("local"), VAULT_KEY, cards, this.timeOffset, selected);
     } catch {
       /* private mode / quota */
     }
@@ -354,9 +396,124 @@ export class GeneratorPanel {
     return this.cards.find((c) => c.id === this.selectedId) ?? this.cards[0];
   }
 
+  private filledCount(): number {
+    return this.cards.filter((c) => Boolean(c.secret.trim())).length;
+  }
+
+  private railNeedsRefresh(): boolean {
+    const needSearch = this.filledCount() >= 2;
+    const hasSearch = Boolean(this.root.querySelector(".rail-search"));
+    const needMulti = this.cards.length > 1;
+    const isSolo = Boolean(this.root.querySelector(".workspace--solo"));
+    return needSearch !== hasSearch || needMulti === isSolo;
+  }
+
+  private visibleCards(): CardState[] {
+    if (this.filledCount() < 2) return this.cards;
+    return filterCardsByQuery(this.cards, this.searchQuery);
+  }
+
+  private sortCards() {
+    this.cards = sortPinnedFirst(this.cards);
+  }
+
+  private applySearchFilter() {
+    if (this.filledCount() < 2) return;
+    const visible = new Set(this.visibleCards().map((c) => c.id));
+    for (const card of this.cards) {
+      const item = this.root.querySelector<HTMLElement>(`.rail-item[data-card="${card.id}"]`);
+      if (item) item.hidden = !visible.has(card.id);
+    }
+  }
+
+  private nudgeSelection(delta: number) {
+    const visible = this.visibleCards();
+    if (!visible.length) return;
+    const idx = visible.findIndex((c) => c.id === this.selectedId);
+    const next =
+      idx < 0
+        ? delta > 0
+          ? visible[0]
+          : visible[visible.length - 1]
+        : visible[(idx + delta + visible.length) % visible.length];
+    this.selectCard(next.id);
+  }
+
+  private togglePin(card: CardState) {
+    if (!card.secret.trim()) return;
+    card.pinned = !card.pinned;
+    this.sortCards();
+    this.persistSession();
+    this.render();
+    void this.tick();
+  }
+
+  private pinButton(card: CardState, extraClass = ""): HTMLButtonElement {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `pin-btn${extraClass ? ` ${extraClass}` : ""}`;
+    if (card.pinned) btn.classList.add("is-on");
+    btn.hidden = !card.secret.trim();
+    const label = t(this.lang, card.pinned ? "unpinCard" : "pinCard");
+    btn.title = label;
+    btn.setAttribute("aria-label", label);
+    btn.setAttribute("aria-pressed", card.pinned ? "true" : "false");
+    btn.append(pinIcon());
+    btn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      this.togglePin(card);
+    });
+    return btn;
+  }
+
+  private exportBackup() {
+    const json = vaultBackupJson(this.snapshotCards(), this.timeOffset, this.selected()?.secret);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "totp-backup.json";
+    a.rel = "noopener";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  private async onBackupFile() {
+    const file = this.backupInput?.files?.[0];
+    if (this.backupInput) this.backupInput.value = "";
+    if (!file) return;
+    let text = "";
+    try {
+      text = await file.text();
+    } catch {
+      return;
+    }
+    const payload = parseVaultJson(text);
+    const card = this.selected();
+    if (!payload) {
+      card.status = t(this.lang, "genInvalid");
+      this.syncOutputs(this.unixNow());
+      return;
+    }
+    const hasCards = this.cards.some((c) => Boolean(c.secret.trim()));
+    if (hasCards && !window.confirm(t(this.lang, "importBackupConfirm"))) return;
+    const merged = mergeBackupCards(this.snapshotCards(), payload.cards);
+    this.cards = sortPinnedFirst(merged.map((c) => cardFromPersisted(c, this.defaults)));
+    if (!this.cards.length) this.cards.push(newCard(this.defaults));
+    if (!hasCards) this.timeOffset = payload.timeOffset;
+    const prefer = payload.selectedSecret || card.secret;
+    this.selectedId = this.cards[matchingCardIndex(this.cards, prefer)].id;
+    this.persistSession();
+    this.render();
+    void this.tick();
+  }
+
   private selectCard(id: string) {
     if (this.selectedId === id) return;
     this.selectedId = id;
+    this.persistSession();
     this.render();
     void this.tick();
   }
@@ -405,7 +562,18 @@ export class GeneratorPanel {
       if (left) left.textContent = this.leftLabel(card, unixSeconds);
       if (card.id === this.selectedId) item.setAttribute("aria-current", "true");
       else item.removeAttribute("aria-current");
+      item.classList.toggle("is-pinned", card.pinned);
+      const pinBtn = item.querySelector<HTMLButtonElement>(".pin-btn");
+      if (pinBtn) {
+        pinBtn.hidden = !card.secret.trim();
+        pinBtn.classList.toggle("is-on", card.pinned);
+        const pinLabel = t(this.lang, card.pinned ? "unpinCard" : "pinCard");
+        pinBtn.title = pinLabel;
+        pinBtn.setAttribute("aria-label", pinLabel);
+        pinBtn.setAttribute("aria-pressed", card.pinned ? "true" : "false");
+      }
     }
+    this.applySearchFilter();
 
     const card = this.selected();
     if (!card) return;
@@ -528,7 +696,26 @@ export class GeneratorPanel {
     const addInline = stage.querySelector<HTMLButtonElement>(".add-inline");
     if (addInline) addInline.hidden = !(card.valid && this.cards.length === 1);
     const extra = stage.querySelector<HTMLElement>(".more-actions");
-    if (extra) extra.hidden = !card.valid;
+    if (extra) extra.hidden = false;
+    const exportBtn = stage.querySelector<HTMLButtonElement>(".export-backup-btn");
+    if (exportBtn) exportBtn.hidden = this.filledCount() === 0;
+    const copyUriBtn = stage.querySelector<HTMLButtonElement>(".copy-uri-btn");
+    if (copyUriBtn) copyUriBtn.hidden = !card.valid;
+    const showQrBtn = stage.querySelector<HTMLButtonElement>(".show-qr-btn");
+    if (showQrBtn) showQrBtn.hidden = !card.valid;
+    const copyAllBtn = stage.querySelector<HTMLButtonElement>(".copy-all-uri-btn");
+    if (copyAllBtn) copyAllBtn.hidden = this.filledCount() === 0;
+    const clearVaultBtn = stage.querySelector<HTMLButtonElement>(".clear-vault-btn");
+    if (clearVaultBtn) clearVaultBtn.hidden = this.filledCount() === 0;
+    const stagePin = stage.querySelector<HTMLButtonElement>(".stage-pin");
+    if (stagePin) {
+      stagePin.hidden = noSecret;
+      stagePin.classList.toggle("is-on", card.pinned);
+      const pinLabel = t(this.lang, card.pinned ? "unpinCard" : "pinCard");
+      stagePin.title = pinLabel;
+      stagePin.setAttribute("aria-label", pinLabel);
+      stagePin.setAttribute("aria-pressed", card.pinned ? "true" : "false");
+    }
     const clockRange = stage.querySelector<HTMLInputElement>(".clock-range");
     const clockNum = stage.querySelector<HTMLInputElement>(".clock-num");
     if (clockRange && document.activeElement !== clockRange) clockRange.value = String(this.timeOffset);
@@ -551,13 +738,33 @@ export class GeneratorPanel {
     railLabel.textContent = t(this.lang, "genName");
     const list = document.createElement("div");
     list.className = "rail-list";
-    for (const card of this.cards) list.append(this.railItem(card));
+    const visible = new Set(this.visibleCards().map((c) => c.id));
+    for (const card of this.cards) {
+      const item = this.railItem(card);
+      if (this.filledCount() >= 2 && this.searchQuery.trim() && !visible.has(card.id)) item.hidden = true;
+      list.append(item);
+    }
     const add = document.createElement("button");
     add.type = "button";
     add.className = "add-btn";
     add.textContent = t(this.lang, "genAdd");
     add.addEventListener("click", () => this.addCard());
-    rail.append(railLabel, list, add);
+    rail.append(railLabel);
+    if (this.filledCount() >= 2) {
+      const search = document.createElement("input");
+      search.type = "search";
+      search.className = "rail-search";
+      search.autocomplete = "off";
+      search.placeholder = t(this.lang, "searchAccounts");
+      search.setAttribute("aria-label", t(this.lang, "searchAccounts"));
+      search.value = this.searchQuery;
+      search.addEventListener("input", () => {
+        this.searchQuery = search.value;
+        this.applySearchFilter();
+      });
+      rail.append(search);
+    }
+    rail.append(list, add);
 
     const stage = this.stageEl(selected);
 
@@ -568,7 +775,13 @@ export class GeneratorPanel {
     this.fileInput.hidden = true;
     this.fileInput.addEventListener("change", () => void this.onFile());
 
-    workspace.append(rail, stage, this.fileInput);
+    this.backupInput = document.createElement("input");
+    this.backupInput.type = "file";
+    this.backupInput.accept = "application/json,.json";
+    this.backupInput.hidden = true;
+    this.backupInput.addEventListener("change", () => void this.onBackupFile());
+
+    workspace.append(rail, stage, this.fileInput, this.backupInput);
     this.root.append(workspace);
 
     if (!selected.secret.trim()) {
@@ -576,12 +789,15 @@ export class GeneratorPanel {
     }
   }
 
-  private railItem(card: CardState): HTMLButtonElement {
-    const item = document.createElement("button");
-    item.type = "button";
+  private railItem(card: CardState): HTMLElement {
+    const item = document.createElement("div");
     item.className = "rail-item";
     item.dataset.card = card.id;
     if (card.id === this.selectedId) item.setAttribute("aria-current", "true");
+    if (card.pinned) item.classList.add("is-pinned");
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "rail-select";
     const name = document.createElement("span");
     name.className = "rail-name";
     name.textContent = this.railName(card);
@@ -591,8 +807,9 @@ export class GeneratorPanel {
     const left = document.createElement("span");
     left.className = "rail-left";
     left.textContent = this.leftLabel(card, this.unixNow());
-    item.append(name, code, left);
-    item.addEventListener("click", () => this.selectCard(card.id));
+    select.append(name, code, left);
+    select.addEventListener("click", () => this.selectCard(card.id));
+    item.append(select, this.pinButton(card, "rail-pin"));
     return item;
   }
 
@@ -615,6 +832,7 @@ export class GeneratorPanel {
       const railName = this.root.querySelector(`.rail-item[data-card="${card.id}"] .rail-name`);
       if (railName) railName.textContent = this.railName(card);
       this.persistSession();
+      this.applySearchFilter();
     });
     const del = document.createElement("button");
     del.type = "button";
@@ -636,7 +854,7 @@ export class GeneratorPanel {
     addInline.textContent = t(this.lang, "genAdd");
     addInline.hidden = !(card.valid && this.cards.length === 1);
     addInline.addEventListener("click", () => this.addCard());
-    top.append(name, addInline, del);
+    top.append(name, this.pinButton(card, "stage-pin"), addInline, del);
     top.hidden = !card.secret.trim() && this.cards.length === 1;
 
     const board = document.createElement("div");
@@ -744,11 +962,13 @@ export class GeneratorPanel {
     secret.value = card.secret;
     secret.addEventListener("input", () => {
       applySecretInput(card, secret.value, this.lang);
+      if (!card.secret.trim()) card.pinned = false;
       if (isOtpAuthUri(secret.value)) secret.value = card.secret;
       this.pendingAutoHide = true;
       this.secretVisible = true;
       secret.type = "text";
       this.persistSession();
+      if (this.railNeedsRefresh()) this.render();
       void this.tick();
     });
 
@@ -778,6 +998,7 @@ export class GeneratorPanel {
     clear.addEventListener("click", () => {
       card.secret = "";
       card.name = "";
+      card.pinned = false;
       secret.value = "";
       name.value = "";
       this.secretVisible = true;
@@ -795,7 +1016,7 @@ export class GeneratorPanel {
 
     const extra = document.createElement("details");
     extra.className = "more-actions";
-    extra.hidden = !card.valid;
+    extra.hidden = false;
     const extraSum = document.createElement("summary");
     extraSum.textContent = t(this.lang, "moreActions");
     const extraBody = document.createElement("div");
@@ -804,11 +1025,13 @@ export class GeneratorPanel {
     copyUri.type = "button";
     copyUri.className = "ghost-btn copy-uri-btn";
     copyUri.textContent = t(this.lang, "copyUri");
+    copyUri.hidden = !card.valid;
     copyUri.addEventListener("click", () => void this.copyUri(card));
     const showQr = document.createElement("button");
     showQr.type = "button";
     showQr.className = "ghost-btn show-qr-btn";
     showQr.textContent = t(this.lang, "showQr");
+    showQr.hidden = !card.valid;
     showQr.addEventListener("click", () => void this.showQr(card));
     const scanLive = this.scanButton(card, "scan-live");
     scanLive.hidden = !card.valid;
@@ -818,13 +1041,26 @@ export class GeneratorPanel {
     copyAll.type = "button";
     copyAll.className = "ghost-btn copy-all-uri-btn";
     copyAll.textContent = t(this.lang, "copyAllUri");
+    copyAll.hidden = this.filledCount() === 0;
     copyAll.addEventListener("click", () => void this.copyAllUri());
     const clearVault = document.createElement("button");
     clearVault.type = "button";
     clearVault.className = "ghost-btn clear-vault-btn";
     clearVault.textContent = t(this.lang, "clearVault");
+    clearVault.hidden = this.filledCount() === 0;
     clearVault.addEventListener("click", () => this.clearDeviceRecords());
-    extraBody.append(copyUri, copyAll, showQr, scanLive, camLive, clearVault);
+    const exportBtn = document.createElement("button");
+    exportBtn.type = "button";
+    exportBtn.className = "ghost-btn export-backup-btn";
+    exportBtn.textContent = t(this.lang, "exportBackup");
+    exportBtn.hidden = this.filledCount() === 0;
+    exportBtn.addEventListener("click", () => this.exportBackup());
+    const importBtn = document.createElement("button");
+    importBtn.type = "button";
+    importBtn.className = "ghost-btn import-backup-btn";
+    importBtn.textContent = t(this.lang, "importBackup");
+    importBtn.addEventListener("click", () => this.backupInput?.click());
+    extraBody.append(copyUri, copyAll, showQr, scanLive, camLive, exportBtn, importBtn, clearVault);
     extra.append(extraSum, extraBody);
 
     const details = document.createElement("details");
@@ -1100,7 +1336,7 @@ export class GeneratorPanel {
       }
     }
     this.persistSession();
-    if (added) this.render();
+    if (added || this.railNeedsRefresh()) this.render();
     await this.tick(true);
     if (card.valid) {
       this.root.querySelector<HTMLButtonElement>(".code-display")?.focus();
@@ -1184,6 +1420,16 @@ export class GeneratorPanel {
     if (key === "n") {
       ev.preventDefault();
       this.addCard();
+      return;
+    }
+    if (key === "j" || key === "ArrowDown") {
+      ev.preventDefault();
+      this.nudgeSelection(1);
+      return;
+    }
+    if (key === "k" || key === "ArrowUp") {
+      ev.preventDefault();
+      this.nudgeSelection(-1);
     }
   };
 

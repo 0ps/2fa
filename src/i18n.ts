@@ -38,7 +38,8 @@ export type UIKey =
   | "ctaTools" | "privacyBanner" | "copyHint" | "moreGuides" | "moreTools" | "moreDocs" | "dropHint" | "emptyCta"
   | "clockSkew" | "nextCode" | "hideSecret" | "showSecret" | "copyUri" | "showQr" | "copyCode" | "sessionHint"
   | "moreNav" | "pasteHint" | "localClock" | "camScan" | "camScanStop" | "moreActions" | "genCopiedNext"
-  | "genNameQuiet" | "copyAllUri" | "uploadQr" | "clearVault" | "clearVaultConfirm" | "genScanSkipped";
+  | "genNameQuiet" | "copyAllUri" | "uploadQr" | "clearVault" | "clearVaultConfirm" | "genScanSkipped"
+  | "searchAccounts" | "pinCard" | "unpinCard" | "exportBackup" | "importBackup" | "importBackupConfirm";
 
 type Pack = Record<Lang, string>;
 
@@ -129,6 +130,12 @@ const UI: Record<UIKey, Pack> = {
   clearVault: pack("Clear device records", { zh: "清除本机记录" }),
   clearVaultConfirm: pack("Delete all setup keys saved in this browser?", { zh: "确定清除本机保存的全部设置密钥？" }),
   genScanSkipped: pack("Skipped a duplicate key.", { zh: "已跳过重复密钥。" }),
+  searchAccounts: pack("Search accounts", { zh: "搜索账号", "zh-tw": "搜尋帳號" }),
+  pinCard: pack("Pin", { zh: "置顶", "zh-tw": "置頂" }),
+  unpinCard: pack("Unpin", { zh: "取消置顶", "zh-tw": "取消置頂" }),
+  exportBackup: pack("Export backup", { zh: "导出备份", "zh-tw": "匯出備份" }),
+  importBackup: pack("Import backup", { zh: "导入备份", "zh-tw": "匯入備份" }),
+  importBackupConfirm: pack("Import will merge with records on this device. Duplicate keys will be skipped. Continue?", { zh: "导入会与本机记录合并，重复密钥会跳过。继续？", "zh-tw": "匯入會與本機記錄合併，重複金鑰會跳過。繼續？" }),
 };
 
 export function t(lang: Lang, key: UIKey, vars?: Record<string, string | number>): string {

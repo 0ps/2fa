@@ -301,22 +301,53 @@ h1:focus { outline: none; }
   min-height: 0;
 }
 
-.rail-item {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto;
-  gap: 4px 8px;
+.rail-search {
   width: 100%;
   margin: 0;
-  padding: 11px 12px;
-  text-align: start;
-  appearance: none;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.8125rem;
+  box-shadow: var(--shadow-sm);
+}
+.rail-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--focus-ring);
+}
+
+.rail-item {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  margin: 0;
+  padding: 0;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text);
-  cursor: pointer;
   transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.rail-select {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 4px 8px;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 11px 12px;
+  text-align: start;
+  appearance: none;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
 }
 
 .rail-item:hover {
@@ -353,6 +384,45 @@ h1:focus { outline: none; }
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   align-self: center;
+}
+
+.pin-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--faint);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.12s ease, background 0.12s ease, transform 0.12s ease;
+}
+.pin-btn svg {
+  display: block;
+  transform: rotate(45deg);
+}
+.pin-btn:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.pin-btn.is-on {
+  color: var(--accent);
+}
+.pin-btn.is-on svg {
+  transform: none;
+}
+.rail-pin {
+  align-self: start;
+  margin: 6px 6px 0 0;
+}
+.card-top .stage-pin {
+  margin-left: auto;
 }
 
 .add-btn {
@@ -934,7 +1004,9 @@ button:focus-visible,
 .ghost-btn:focus-visible,
 .primary-btn:focus-visible,
 .add-btn:focus-visible,
-.rail-item:focus-visible {
+.rail-item:focus-visible,
+.rail-select:focus-visible,
+.pin-btn:focus-visible {
   outline: none;
   box-shadow: var(--focus-ring);
   border-color: var(--accent);
@@ -1189,7 +1261,8 @@ button:focus-visible,
 
   .workspace--solo .rail { display: none; }
 
-  .rail-label { grid-column: 1 / -1; }
+  .rail-label,
+  .rail-search { grid-column: 1 / -1; }
   .rail-list {
     grid-column: 1;
     flex-direction: row;
