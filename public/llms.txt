@@ -1,0 +1,16 @@
+# Local TOTP
+
+A local-first static website that computes RFC 6238 TOTP codes in the browser with Web Crypto HMAC.
+
+## Privacy
+- Secrets are never persisted.
+- The only localStorage key is totpPreferredLanguage.
+- Prefer #secret= URL fragments; query and path forms are supported then rewritten.
+
+## Crypto
+- Base32 alphabet A-Z2-7, spaces/hyphens/padding stripped.
+- HMAC-SHA1 / SHA-256 / SHA-512 via crypto.subtle.
+- Test vectors: /rfc6238-test-vectors.json (RFC 6238 Appendix B).
+
+## Tools and guides
+See /site-map and /sitemap.xml. This is not an official ChatGPT, Google, or Microsoft authenticator.

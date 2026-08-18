@@ -1,0 +1,11 @@
+{
+  "name": "Local TOTP",
+  "short_name": "TOTP",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f4efe4",
+  "theme_color": "#1f6b4a",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
