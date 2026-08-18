@@ -1,6 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
-  <rect width="1200" height="630" fill="#f4efe4"/>
-  <rect x="80" y="90" width="1040" height="450" rx="32" fill="#fffaf2" stroke="#1f6b4a" stroke-width="8"/>
-  <text x="120" y="240" font-size="72" font-family="Georgia, serif" fill="#134833">Local TOTP</text>
-  <text x="120" y="340" font-size="36" font-family="sans-serif" fill="#1e2a24">Private 2FA codes in this browser</text>
-</svg>
